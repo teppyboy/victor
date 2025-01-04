@@ -1,0 +1,8 @@
+/target
+
+# vcpkg
+/vcpkg
+
+# Victor
+/log
+/mails
