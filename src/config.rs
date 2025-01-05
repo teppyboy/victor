@@ -14,11 +14,19 @@ pub struct Log {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Features {
+    pub attachments: bool,
+    pub text_body: bool,
+    pub html_body: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SMTP {
     pub enabled: bool,
     pub host: String,
     pub port: u16,
     pub domain: String,
+    pub features: Features,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -42,6 +50,11 @@ impl Config {
                 host: "::".to_string(),
                 port: 25,
                 domain: "localhost".to_string(),
+                features: Features {
+                    attachments: false,
+                    text_body: true,
+                    html_body: true,
+                },
             },
         }
     }

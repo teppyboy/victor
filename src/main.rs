@@ -49,10 +49,10 @@ async fn main() {
     let listening_server = Arc::new(Mutex::new(server.start().await.unwrap()));
     let receiver_mutex = listening_server.clone();
     let receiver_handle = tokio::task::spawn(async move {
-        // Bro why the Mail struct is a private struct :D
+        let mail_handler = handler::MailHandler::new(user_config.smtp.features);
         loop {
             let mail = receiver_mutex.lock().await.mail_rx.recv().await.unwrap();
-            task::spawn(handler::handle_mail(mail));
+            task::spawn(mail_handler.clone().handle(mail));
         }
     });
     info!("Server started");
