@@ -1,21 +1,22 @@
 use mail_parser::{Encoding, HeaderName, MessageParser, decoders::base64};
-use minismtp::connection::Mail;
+use minismtp::connection::Mail as SMTPMail;
 use rand::random;
 use tokio::{fs, io::AsyncWriteExt};
-use tracing::{error, trace};
+use tracing::{debug, error, trace};
 
 use crate::{config::Features, structs::Attachment};
 
 #[derive(Debug, Clone)]
-pub struct MailHandler {
+pub struct Mail {
     pub features: Features,
 }
 
-impl MailHandler {
-    pub fn new(features: Features) -> MailHandler {
-        MailHandler { features }
+impl Mail {
+    pub fn new(features: Features) -> Mail {
+        Mail { features }
     }
-    pub async fn handle(self, mail: Mail) {
+    pub async fn handle(self, mail: SMTPMail) {
+        // This currently doesn't handle spam mails, so fuck
         let recipients = mail.to.clone();
         let sender = mail.from.clone();
         trace!("Recipients: {:#?}", recipients);
@@ -81,14 +82,14 @@ impl MailHandler {
                     match base64::base64_decode(msg_attachment.contents()) {
                         Some(decoded) => {
                             if decoded.len() == 0 {
-                                error!("Failed to decode base64 attachment, ignoring...");
+                                error!("Failed to decode base64 attachment (length 0), ignoring...");
                                 continue;
                             }
                             trace!("Decoded attachment: {:?}", decoded);
                             decoded
                         }
                         None => {
-                            error!("Failed to decode base64 attachment, ignoring...");
+                            error!("Failed to decode base64 attachment (base64 error), ignoring...");
                             continue;
                         }
                     }
@@ -103,9 +104,7 @@ impl MailHandler {
                 attachments.push(attachment);
             }
         }
-        // Save the mail
         let mut id = random::<u64>().to_string();
-        trace!("Generated ID: {}", id);
         let mut mail_dir = format!("./mails/{}", id);
         loop {
             match fs::try_exists(&mail_dir).await {
@@ -123,6 +122,9 @@ impl MailHandler {
                 }
             }
         }
+        trace!("Generated ID: {}", id);
+        // Save the mail to filesystem
+        debug!("Saving mail '{}' to filesystem...", id);
         match fs::create_dir(&mail_dir).await {
             Ok(_) => {
                 trace!("Created mail directory: {}", mail_dir);

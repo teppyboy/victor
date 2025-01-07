@@ -1,10 +1,10 @@
 use minismtp::server::SmtpServer;
 use std::{env, path::Path, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, task};
-use tracing::{error, info, trace};
+use tracing::{error, info, trace, warn, debug};
 
 mod config;
-mod handler;
+mod mail;
 mod logging;
 mod structs;
 
@@ -27,9 +27,22 @@ async fn main() {
     };
     logging::setup(&log_level, log_file_name).expect("Failed to setup logging.");
     if !user_config.smtp.enabled {
-        info!("SMTP server is disabled, goodbye.");
+        warn!("SMTP server is disabled, but this is a SMTP server binary. Exiting...");
         return;
     }
+    // Check if the features are enabled
+    if !user_config.smtp.features.attachments {
+        info!("Attachments are disabled, mail server will not save attachments.");
+    } else {
+        warn!("Attachments currently DOES NOT SAVE PROPERLY, USE AT YOUR OWN RISK.");
+    }
+    if !user_config.smtp.features.text_body {
+        warn!("Plain text body is disabled, mail server will not save text body.");
+    }
+    if !user_config.smtp.features.html_body {
+        warn!("HTML body is disabled, mail server will not save HTML body.");
+    }
+    // Setup SMTP server
     let host = user_config.smtp.host.clone();
     let port = user_config.smtp.port.clone();
     let domain = user_config.smtp.domain.clone();
@@ -47,14 +60,17 @@ async fn main() {
         None,
     );
     let listening_server = Arc::new(Mutex::new(server.start().await.unwrap()));
+    debug!("Starting mail receiver task");
     let receiver_mutex = listening_server.clone();
     let receiver_handle = tokio::task::spawn(async move {
-        let mail_handler = handler::MailHandler::new(user_config.smtp.features);
+        let mail = mail::Mail::new(user_config.smtp.features);
         loop {
-            let mail = receiver_mutex.lock().await.mail_rx.recv().await.unwrap();
-            task::spawn(mail_handler.clone().handle(mail));
+            let smtp_mail = receiver_mutex.lock().await.mail_rx.recv().await.unwrap();
+            // I want to kms for having to clone the mail struct every time we receive a mail
+            task::spawn(mail.clone().handle(smtp_mail));
         }
     });
+    debug!("Mail receiver task started");
     info!("Server started");
     info!("Press Ctrl+C to stop the server");
     tokio::signal::ctrl_c()
