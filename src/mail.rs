@@ -1,19 +1,38 @@
 use mail_parser::{Encoding, HeaderName, MessageParser, decoders::base64};
 use minismtp::connection::Mail as SMTPMail;
 use rand::random;
+use redis::{AsyncCommands, Client, Connection, aio::MultiplexedConnection};
 use tokio::{fs, io::AsyncWriteExt};
 use tracing::{debug, error, trace};
+use tracing_subscriber::registry::Data;
 
 use crate::{config::Features, structs::Attachment};
+
+// Database for the mail server
+pub struct Database {
+    pub client: redis::Client,
+    pub connection: redis::Connection,
+}
+
+impl Database {
+    pub fn new(url: &str) -> Database {
+        let client = redis::Client::open(url).expect("Failed to open Redis client.");
+        let connection = client
+            .get_connection()
+            .expect("Failed to connect to Redis.");
+        Database { client, connection }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Mail {
     pub features: Features,
+    pub db: MultiplexedConnection,
 }
 
 impl Mail {
-    pub fn new(features: Features) -> Mail {
-        Mail { features }
+    pub fn new(features: Features, db: MultiplexedConnection) -> Mail {
+        Mail { features, db }
     }
     pub async fn handle(self, mail: SMTPMail) {
         // This currently doesn't handle spam mails, so fuck
@@ -82,14 +101,18 @@ impl Mail {
                     match base64::base64_decode(msg_attachment.contents()) {
                         Some(decoded) => {
                             if decoded.len() == 0 {
-                                error!("Failed to decode base64 attachment (length 0), ignoring...");
+                                error!(
+                                    "Failed to decode base64 attachment (length 0), ignoring..."
+                                );
                                 continue;
                             }
                             trace!("Decoded attachment: {:?}", decoded);
                             decoded
                         }
                         None => {
-                            error!("Failed to decode base64 attachment (base64 error), ignoring...");
+                            error!(
+                                "Failed to decode base64 attachment (base64 error), ignoring..."
+                            );
                             continue;
                         }
                     }
@@ -124,7 +147,28 @@ impl Mail {
         }
         trace!("Generated ID: {}", id);
         // Save the mail to filesystem
-        debug!("Saving mail '{}' to filesystem...", id);
+        debug!("Saving mail '{}'...", id);
+        trace!("Saving mail to database...");
+        let is_body_text = body_text.is_some() && self.features.text_body;
+        let is_body_html = body_html.is_some() && self.features.text_body;
+        let attachments_len = attachments.len();
+        match self
+            .db
+            .hset_multiple(format!("mail:{}", id), &[
+                ("body_text", is_body_text),
+                ("body_html", is_body_html),
+                ("attachments", attachments_len),
+            ])
+            .await
+        {
+            Ok(_) => {
+                trace!("Saved mail to database: {}", id);
+            }
+            Err(e) => {
+                error!("Failed to save mail to database: {}", e);
+                return;
+            }
+        }
         match fs::create_dir(&mail_dir).await {
             Ok(_) => {
                 trace!("Created mail directory: {}", mail_dir);
@@ -134,7 +178,7 @@ impl Mail {
                 return;
             }
         }
-        if body_text.is_some() && self.features.text_body {
+        if is_body_text {
             let text_path = format!("{}/body.txt", mail_dir);
             match fs::File::create(&text_path).await {
                 Ok(mut file) => {
@@ -154,7 +198,7 @@ impl Mail {
                 }
             };
         }
-        if body_html.is_some() && self.features.text_body {
+        if is_body_html {
             let html_path = format!("{}/body.html", mail_dir);
             match fs::File::create(&html_path).await {
                 Ok(mut file) => {
@@ -174,7 +218,7 @@ impl Mail {
                 }
             };
         }
-        if attachments.len() > 0 {
+        if attachments_len {
             let attachments_path = format!("{}/attachments", mail_dir);
             match fs::create_dir(&attachments_path).await {
                 Ok(_) => {
@@ -207,4 +251,6 @@ impl Mail {
             }
         }
     }
+    // Save the mail to database
+    trace!("fuck");
 }

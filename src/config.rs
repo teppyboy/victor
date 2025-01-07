@@ -30,6 +30,11 @@ pub struct SMTP {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Database {
+    pub url: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub log: Log,
     pub smtp: SMTP,

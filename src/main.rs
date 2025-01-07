@@ -1,11 +1,11 @@
 use minismtp::server::SmtpServer;
 use std::{env, path::Path, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, task};
-use tracing::{error, info, trace, warn, debug};
+use tracing::{debug, error, info, trace, warn};
 
 mod config;
-mod mail;
 mod logging;
+mod mail;
 mod structs;
 
 #[tokio::main]
@@ -42,6 +42,15 @@ async fn main() {
     if !user_config.smtp.features.html_body {
         warn!("HTML body is disabled, mail server will not save HTML body.");
     }
+    // Initialize database
+    info!("Connecting to database...");
+    let db = mail::Database::new(&user_config.database.url);
+    let db_async_connection = db
+        .client
+        .create_multiplexed_tokio_connection()
+        .await
+        .unwrap()
+        .0;
     // Setup SMTP server
     let host = user_config.smtp.host.clone();
     let port = user_config.smtp.port.clone();
@@ -63,7 +72,7 @@ async fn main() {
     debug!("Starting mail receiver task");
     let receiver_mutex = listening_server.clone();
     let receiver_handle = tokio::task::spawn(async move {
-        let mail = mail::Mail::new(user_config.smtp.features);
+        let mail = mail::Mail::new(user_config.smtp.features, db_async_connection);
         loop {
             let smtp_mail = receiver_mutex.lock().await.mail_rx.recv().await.unwrap();
             // I want to kms for having to clone the mail struct every time we receive a mail
