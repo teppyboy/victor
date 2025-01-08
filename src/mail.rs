@@ -1,7 +1,7 @@
 use mail_parser::{Encoding, HeaderName, MessageParser, decoders::base64};
 use minismtp::connection::Mail as SMTPMail;
 use rand::random;
-use redis::{AsyncCommands, Client, Connection, aio::MultiplexedConnection};
+use redis::aio::MultiplexedConnection;
 use tokio::{fs, io::AsyncWriteExt};
 use tracing::{debug, error, trace};
 
@@ -9,17 +9,17 @@ use crate::{config::Features, structs::Attachment};
 
 // Database for the mail server
 pub struct Database {
-    pub client: redis::Client,
-    pub connection: redis::Connection,
+    pub client: redis::Client
 }
 
 impl Database {
     pub fn new(url: &str) -> Database {
         let client = redis::Client::open(url).expect("Failed to open Redis client.");
-        let connection = client
+        // This shit isn't enough tho, we have to manually test later.
+        client
             .get_connection()
             .expect("Failed to connect to Redis.");
-        Database { client, connection }
+        Database { client }
     }
 }
 
@@ -33,9 +33,23 @@ impl Mail {
     pub fn new(features: Features, db: MultiplexedConnection) -> Mail {
         Mail { features, db }
     }
-    pub async fn handle(mut self, mail: SMTPMail) {
+    pub async fn handle(self, mail: SMTPMail) {
         // This currently doesn't handle spam mails, so fuck
         let recipients = mail.to.clone();
+        // Parse users
+        let mut users: Vec<String> = Vec::new();
+        users.reserve_exact(recipients.len());
+        for recipient in &recipients {
+            let username = recipient.split("@").next().unwrap().to_string();
+            if username.len() > 24 || username.as_ascii().is_none() {
+                trace!("Ignoring invalid username: {}", username);
+                continue;
+            }
+            users.push(username);
+        }
+        if users.len() == 0 {
+            return;
+        }
         let sender = mail.from.clone();
         trace!("Recipients: {:#?}", recipients);
         trace!("Sender: {:#?}", sender);
@@ -49,7 +63,14 @@ impl Mail {
         };
         // trace!("Parsed message: {:#?}", message);
         // Parse the mail
-        let mut subject: Option<String> = None;
+        let timestamp = match message.date() {
+            Some(date) => date,
+            None => {
+                error!("Failed to get timestamp from mail, ignoring the mail...");
+                return;
+            }
+        };
+        let mut subject: String = "".to_string();
         let mut body_text: Option<String> = None;
         let mut body_html: Option<String> = None;
         let mut attachments: Vec<Attachment> = Vec::new();
@@ -58,7 +79,7 @@ impl Mail {
                 if header.name == HeaderName::Subject {
                     let value = header.value.as_text().unwrap().to_owned();
                     trace!("Subject: {}", value);
-                    subject = Some(value);
+                    subject = value;
                 }
             }
             if part.is_text() {
@@ -149,19 +170,46 @@ impl Mail {
         debug!("Saving mail '{}'...", id);
         trace!("Saving mail to database...");
         // Save bodies info
+        let mut body_text_preview = "".to_string();
         let is_body_text = body_text.is_some() && self.features.text_body;
         let is_body_html = body_html.is_some() && self.features.text_body;
         let attachments_len = attachments.len();
+        if is_body_text {
+            let my_body_text = body_text.clone().unwrap();
+            let short_len = if my_body_text.len() > 128 {
+                128
+            } else {
+                my_body_text.len()
+            };
+            body_text_preview = my_body_text[..short_len].to_string();
+            body_text_preview.push_str("...");
+        }
+        // This shit looks dumb af but okay.
         let save_db_cmd_1 = redis::Cmd::hset_multiple(format!("mail:{}", id), &[
             ("has_body_text", is_body_text),
             ("has_body_html", is_body_html),
         ]);
         let save_db_cmd_2 =
             redis::Cmd::hset(format!("mail:{}", id), "attachments", attachments_len);
-        let mut conn = self.db.clone();
+        let save_db_cmd_3 = redis::Cmd::hset(
+            format!("mail:{}", id),
+            "timestamp",
+            timestamp.to_timestamp(),
+        );
+        let save_db_cmd_4 = redis::Cmd::hset_multiple(format!("mail:{}", id), &[
+            ("subject", subject),
+            ("sender", sender),
+            ("body_text_preview", body_text_preview),
+        ]);
+        let con_1 = &mut self.db.clone();
+        let con_2 = &mut self.db.clone();
+        let con_3 = &mut self.db.clone();
+        let con_4 = &mut self.db.clone();
         match tokio::try_join!(
-            save_db_cmd_1.exec_async(&mut conn),
-            save_db_cmd_2.exec_async(&mut self.db)
+            save_db_cmd_1.exec_async(con_1),
+            save_db_cmd_2.exec_async(con_2),
+            save_db_cmd_3.exec_async(con_3),
+            save_db_cmd_4.exec_async(con_4),
         ) {
             Ok(_) => {
                 trace!("Saved mail to database: {}", id);
@@ -169,6 +217,22 @@ impl Mail {
             Err(e) => {
                 error!("Failed to save mail to database: {}", e);
                 return;
+            }
+        }
+        // Save users
+        for username in users {
+            let save_db_cmd_1 = redis::Cmd::lpush(format!("user:{}", username), format!("mail:{}", id));
+            let con_1 = &mut self.db.clone();
+            match tokio::try_join!(
+                save_db_cmd_1.exec_async(con_1),
+            ) {
+                Ok(_) => {
+                    trace!("Saved user to database: {}", id);
+                }
+                Err(e) => {
+                    error!("Failed to save user to database: {}", e);
+                    return;
+                }
             }
         }
         // Actually write the mail to filesystem

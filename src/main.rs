@@ -1,3 +1,4 @@
+#![feature(ascii_char)]
 use minismtp::server::SmtpServer;
 use std::{env, path::Path, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, task};
@@ -45,12 +46,14 @@ async fn main() {
     // Initialize database
     info!("Connecting to database...");
     let db = mail::Database::new(&user_config.database.url);
-    let db_async_connection = db
-        .client
-        .create_multiplexed_tokio_connection()
-        .await
-        .unwrap()
-        .0;
+    let db_async_connection = db.client.get_multiplexed_async_connection().await.unwrap();
+    trace!(
+        "Redis connection test: {}",
+        redis::Cmd::hget("test_hash", "one")
+            .query_async::<i32>(&mut db_async_connection.clone())
+            .await
+            .unwrap()
+    );
     // Setup SMTP server
     let host = user_config.smtp.host.clone();
     let port = user_config.smtp.port.clone();
