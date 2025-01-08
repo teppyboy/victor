@@ -4,7 +4,6 @@ use rand::random;
 use redis::{AsyncCommands, Client, Connection, aio::MultiplexedConnection};
 use tokio::{fs, io::AsyncWriteExt};
 use tracing::{debug, error, trace};
-use tracing_subscriber::registry::Data;
 
 use crate::{config::Features, structs::Attachment};
 
@@ -34,7 +33,7 @@ impl Mail {
     pub fn new(features: Features, db: MultiplexedConnection) -> Mail {
         Mail { features, db }
     }
-    pub async fn handle(self, mail: SMTPMail) {
+    pub async fn handle(mut self, mail: SMTPMail) {
         // This currently doesn't handle spam mails, so fuck
         let recipients = mail.to.clone();
         let sender = mail.from.clone();
@@ -149,18 +148,21 @@ impl Mail {
         // Save the mail to filesystem
         debug!("Saving mail '{}'...", id);
         trace!("Saving mail to database...");
+        // Save bodies info
         let is_body_text = body_text.is_some() && self.features.text_body;
         let is_body_html = body_html.is_some() && self.features.text_body;
         let attachments_len = attachments.len();
-        match self
-            .db
-            .hset_multiple(format!("mail:{}", id), &[
-                ("body_text", is_body_text),
-                ("body_html", is_body_html),
-                ("attachments", attachments_len),
-            ])
-            .await
-        {
+        let save_db_cmd_1 = redis::Cmd::hset_multiple(format!("mail:{}", id), &[
+            ("has_body_text", is_body_text),
+            ("has_body_html", is_body_html),
+        ]);
+        let save_db_cmd_2 =
+            redis::Cmd::hset(format!("mail:{}", id), "attachments", attachments_len);
+        let mut conn = self.db.clone();
+        match tokio::try_join!(
+            save_db_cmd_1.exec_async(&mut conn),
+            save_db_cmd_2.exec_async(&mut self.db)
+        ) {
             Ok(_) => {
                 trace!("Saved mail to database: {}", id);
             }
@@ -169,6 +171,7 @@ impl Mail {
                 return;
             }
         }
+        // Actually write the mail to filesystem
         match fs::create_dir(&mail_dir).await {
             Ok(_) => {
                 trace!("Created mail directory: {}", mail_dir);
@@ -218,7 +221,7 @@ impl Mail {
                 }
             };
         }
-        if attachments_len {
+        if attachments_len > 0 {
             let attachments_path = format!("{}/attachments", mail_dir);
             match fs::create_dir(&attachments_path).await {
                 Ok(_) => {
@@ -251,6 +254,4 @@ impl Mail {
             }
         }
     }
-    // Save the mail to database
-    trace!("fuck");
 }

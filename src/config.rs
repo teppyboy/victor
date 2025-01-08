@@ -37,6 +37,7 @@ pub struct Database {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub log: Log,
+    pub database: Database,
     pub smtp: SMTP,
 }
 
@@ -49,6 +50,10 @@ impl Config {
                     enabled: false,
                     path: "victor-%Y%m%d-%H%M%S.log".to_string(),
                 },
+            },
+            // I don't know if this shit works or not tbh
+            database: Database {
+                url: "redis://localhost:6379".to_string(),
             },
             smtp: SMTP {
                 enabled: true,
