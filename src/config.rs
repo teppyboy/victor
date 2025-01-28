@@ -21,6 +21,13 @@ pub struct Features {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TLS {
+    pub enabled: bool,
+    pub cert_path: String,
+    pub key: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SMTP {
     pub enabled: bool,
     pub host: String,

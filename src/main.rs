@@ -2,12 +2,13 @@
 use minismtp::server::SmtpServer;
 use std::{env, path::Path, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, task};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 mod config;
 mod logging;
-mod mail;
+mod handler;
 mod structs;
+mod mail;
 
 #[tokio::main]
 async fn main() {
@@ -45,12 +46,11 @@ async fn main() {
     }
     // Initialize database
     info!("Connecting to database...");
-    let db = mail::Database::new(&user_config.database.url);
-    let db_async_connection = db.client.get_multiplexed_async_connection().await.unwrap();
+    let my_mail = mail::Mail::new(&user_config.database.url).await;
     trace!(
         "Redis connection test: {}",
         redis::Cmd::hget("test_hash", "one")
-            .query_async::<i32>(&mut db_async_connection.clone())
+            .query_async::<i32>(&mut my_mail.con.clone())
             .await
             .unwrap()
     );
@@ -75,11 +75,10 @@ async fn main() {
     debug!("Starting mail receiver task");
     let receiver_mutex = listening_server.clone();
     let receiver_handle = tokio::task::spawn(async move {
-        let mail = mail::Mail::new(user_config.smtp.features, db_async_connection);
+        let mail_handler = handler::MailHandler::new(user_config.smtp.features, my_mail);
         loop {
             let smtp_mail = receiver_mutex.lock().await.mail_rx.recv().await.unwrap();
-            // I want to kms for having to clone the mail struct every time we receive a mail
-            task::spawn(mail.clone().handle(smtp_mail));
+            task::spawn(mail_handler.clone().handle(smtp_mail));
         }
     });
     debug!("Mail receiver task started");
